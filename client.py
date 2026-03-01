@@ -56,5 +56,6 @@ class XenonClient:
 if __name__ == "__main__":
     # LOCAL TEST İÇİN: 127.0.0.1 ve 1604 kullan.
     # DIŞ BAĞLANTI İÇİN: Localtonet adresini buraya yaz.
-    client = XenonClient("127.0.0.1", 1604)
+    client = XenonClient("uwtd3ffva.localto.net", 6827)
     client.run()
+
