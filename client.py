@@ -16,7 +16,7 @@ import zipfile
 
 # --- BAĞLANTI AYARLARI ---
 HOST = "uwtd3ffva.localto.net"
-PORT = 1823
+PORT = 9387
 # -------------------------
 
 class XenonClient:
