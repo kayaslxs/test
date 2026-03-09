@@ -593,6 +593,7 @@ if __name__ == "__main__":
         server_port = int(sys.argv[2])
     else:
         server_ip = "uwtd3ffva.localto.net"
-        server_port = 7839
+        server_port = 9220
     client = XenonClient(server_ip, server_port)
     client.connect()
+
